@@ -12,9 +12,15 @@ import time
 import logging
 import random
 import os
+import csv
+import json
+from collections import Counter
+import re
 
-TOKEN = ""
+TOKEN = "13Gs3hlNyaadmxTLRnQJz9omiUYLWY9t0ZwKIWoo.1321924987"
 BUBBLE_ID = "4321430"
+warning_message = "" 
+last_message_id = ""
 
 
 class ProntoUploader:
@@ -172,9 +178,6 @@ class ProntoUploader:
             return self.create_message(text=text)
 
 
-warning_message = "" 
-last_message_id = ""
-
 def fetch_latest_message():
     global TOKEN
     global BUBBLE_ID
@@ -186,7 +189,6 @@ def fetch_latest_message():
         "Content-Type": "application/json",
         "Authorization": f"Bearer {TOKEN}",
     }
-    last_message_id = ""
 
     """Fetch only the most recent message"""
     url = f"{api_base_url}api/v1/bubble.history"
@@ -197,20 +199,31 @@ def fetch_latest_message():
         messages = response.json().get("messages", [])
         if messages[0]["id"] != last_message_id:
             last_message_id = messages[0]["id"]
-            return messages[0]["message"]
-        else:
-            return None
+            return [messages[0]["message"], messages[0]["user"]["id"], messages[0]["user"]["firstname"] +" "+ messages[0]["user"]["lastname"]]
+
     else:
         print(f"HTTP error occurred: {response.status_code} - {response.text}")
 
-    return None  
+    return ["","",""]
 
 
-def ball():
+def ballspawn():
     global TOKEN
     global BUBBLE_ID
-    FILE_PATH = "balls/" + random.choice(os.listdir("balls"))
+    ball = list(csv.reader(open('balls.csv')))[random.randint(1,2)]
+    print(ball)
+    FILE_PATH = "balls/" + ball[1]
+    name = ball[0]
+    names = ball[3]
+    names = names.split(' ')
+    names =[x.lower() for x in names]
+    #print(name)
+    rarity = ball[2]
+
+
     uploader = ProntoUploader(token=TOKEN, bubble_id=BUBBLE_ID)
+
+
     try:
         message_id = uploader.send(FILE_PATH, text="A new ball spawned!")
         print("Message sent, ID =", message_id)
@@ -221,27 +234,199 @@ def ball():
     
     while True:
         msg = fetch_latest_message()
-        print(msg)
-        if msg  == "!catch ball":
-            uploader.send(text = "Ball caught")
+        text = msg[0]
+        user_id = str(msg[1])
+        user_name = msg[2]
+        #print(msg)
+        if text.lower()[7:] in names:
+            uploader.send(text = f"<@{user_id}> caught {name}")
+
+            try:
+                with open("db.json", "r") as f:
+                    data = json.load(f)
+            except (FileNotFoundError, json.JSONDecodeError):
+                data = {}
+
+            if user_id not in data:
+                data[user_id] = []
+
+            data[user_id].append(name)
+
+            with open("db.json", "w") as f:
+                json.dump(data, f, indent=4)
+
             break
+
+
+
+
+def give_ball_from_input(input_str, giver_id):
+    global TOKEN
+    global BUBBLE_ID
+
+    uploader = ProntoUploader(token=TOKEN, bubble_id=BUBBLE_ID)
+
+    """
+    Parse the input string and call the give function to give the ball.
+    input_str is of the form: !give <ball_name> <@Receiver Name>
+    giver_id is the ID of the user giving the ball.
+    """
+    result = None
+    # Parse the input string using regular expressions
+    match = re.match(r"!give\s+(\S+)\s+<@(.+)>", input_str)
+    if not match:
+        result =  "Error: Invalid input format. Example: give Gondor @John Doe"
+        uploader.send(text = result)
+        return result
+    
+    ball = match.group(1)  # Extract ball name
+    print(ball)
+    receiver_name = match.group(2).strip()  # Extract receiver's name
+    print(receiver_name)
+
+    give(ball, giver_id, receiver_name)
+    return result
+
+
+def give(ball, giver, receiver):
+    global TOKEN
+    global BUBBLE_ID
+
+    uploader = ProntoUploader(token=TOKEN, bubble_id=BUBBLE_ID)
+
+
+    result = None
+    try:
+        # Load the existing data from the JSON file
+        with open("db.json", "r") as f:
+            data = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        data = {}
+
+    # Check if the giver has the ball
+    giver_id = str(giver)
+    if giver_id not in data or ball not in data[giver_id]:
+        result = f"Error: <@{giver}> doesn't have the ball {ball} to give."
+        uploader.send(text = result)
+        return result
+
+    # Remove one instance of the ball from the giver's list
+    data[giver_id].remove(ball)
+    
+    # If the receiver doesn't exist in the data, create a new entry
+    receiver_id = str(receiver)
+    if receiver_id not in data:
+        data[receiver_id] = []
+
+    # Add the ball to the receiver's list
+    data[receiver_id].append(ball)
+
+    # Save the updated data back to the JSON file
+    with open("db.json", "w") as f:
+        json.dump(data, f, indent=4)
+    
+    result = f"<@{giver}> has successfully given {ball} to <@{receiver}>."
+    uploader.send(text = result)
+    return result
+    
+
+
+def view(ball, user_id):
+    global TOKEN
+    global BUBBLE_ID
+    link = ""
+    uploader = ProntoUploader(token=TOKEN, bubble_id=BUBBLE_ID)
+
+    # Step 1: Convert entered name (alternate or main) to official name + get link
+    official_name = None
+    link = None
+
+    with open("balls.csv", encoding='utf-8') as f:
+        next(f)  # skip header
+        for line in f:
+            parts = line.strip().split(',')
+            main_name = parts[0]
+            image_link = parts[1]
+            alternates = parts[3].split(" ")
+            all_names = [main_name] + alternates
+            if ball.lower() in [n.lower() for n in all_names]:
+                official_name = main_name
+                link = image_link
+                break
+
+    if not official_name:
+        uploader.send(text = "Name not found.")
+        return "Name not found."
+
+    # Step 2: Check if the user owns the *official* ball name
+    try:
+        with open("db.json", "r") as f:
+            data = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        result = "There was an error loading the database."
+        uploader.send(text=result)
+        return result
+
+    giver_id = str(user_id)
+    if giver_id not in data or official_name.lower() not in [x.lower() for x in data[giver_id]]:
+        result = f"Error: You don't have the ball {official_name}."
+        uploader.send(text=result)
+        return result
+
+    # Step 3: Show the image
+    uploader.send(str("balls/" + link), "")
+    return None
+
+
+
+
+
+
+def monitor_messages():
+    global TOKEN
+    global BUBBLE_ID
+
+    uploader = ProntoUploader(token=TOKEN, bubble_id=BUBBLE_ID)
+    
+    while True:
+        msg = fetch_latest_message()
+        text = msg[0]
+        user_id = str(msg[1])
+        user_name = msg[2]
+        if text == "!ball":
+            ballspawn()
+        if text == "!list":
+            try:
+                with open("db.json", "r") as f:
+                    data = json.load(f)
+            except (FileNotFoundError, json.JSONDecodeError):
+                result = "No data found."
+
+            balls = data.get(str(user_id), [])
+
+            if not balls:
+                result = f"<@{user_id}> hasn't caught any balls yet."
+
+            ball_counts = Counter(balls)
+            result = f"<@{user_id}> has caught the following balls:\n"
+            
+            for i, (ball, count) in enumerate(ball_counts.items()):
+                result += f"{i+1}. {ball} ({count})\n"
+
+            uploader.send("", result)
+
+        if "!give" in text:
+            print(text)
+            give_ball_from_input(text, user_id)
+
+        if "!view" in text:
+            view(text[6:],user_id)
+            
+
+
+
     
 
 if __name__ == "__main__":
-
-    """
-    # example usage
-    global TOKEN
-    global BUBBLE_ID
-    FILE_PATH = "numenor.png"
-
-    uploader = ProntoUploader(token=TOKEN, bubble_id=BUBBLE_ID)
-    try:
-        message_id = uploader.send(text="A new ball spawned!")
-        print("Message sent, ID =", message_id)
-    except requests.HTTPError as e:
-        uploader.log.error("HTTP error: %s", e)
-    except Exception as e:
-        uploader.log.exception("Unexpected error: %s", e)
-    """
-    ball()
+    #give_ball_from_input("!give Numenor <@5302367>", "5302419")
+    monitor_messages()
