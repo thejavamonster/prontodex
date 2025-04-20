@@ -17,7 +17,7 @@ import json
 from collections import Counter
 import re
 
-TOKEN = "13Gs3hlNyaadmxTLRnQJz9omiUYLWY9t0ZwKIWoo.1321924987"
+TOKEN = ""
 BUBBLE_ID = "4321430"
 warning_message = "" 
 last_message_id = ""
